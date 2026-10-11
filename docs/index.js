@@ -136,6 +136,35 @@
     });
   }
 
+  // Shared by the settings panel and the slash command.
+  function lookup(mode, input, w) {
+    let task;
+    try {
+      if (mode === "hex2name") {
+        const hx = padBytes(validateHex(cleanHex(input)), w);
+        task = hexToName(hexToDec(hx));
+      } else {
+        const name = (input || "").trim();
+        if (!name) throw new Error("Please enter a PSN name.");
+        task = nameToHex(name);
+      }
+    } catch (e) {
+      return Promise.reject(e);
+    }
+    return task.then(function (res) {
+      const hexId = decToHex(res.accountId).padStart((w || 8) * 2, "0");
+      const result = mode === "hex2name" ? res.onlineId : hexId;
+      const text =
+        "Online ID:        " + res.onlineId + "\n" +
+        "Account ID:       " + res.accountId + "\n" +
+        "-----------------------------------\n" +
+        "Hex ID:           " + hexId + "\n" +
+        "Byte count:       " + (hexId.length / 2) + "\n\n" +
+        "(Swapped endian hex: " + swapEndian(hexId) + ")";
+      return { result: result, text: text };
+    });
+  }
+
   // ---------- clipboard / toast (best effort across Kettu/Bunny builds) ----------
   const copy = (text) => {
     try {
@@ -184,38 +213,13 @@
 
     const convert = function () {
       if (busy) return;
-      let w = 0;
-      let task;
-      try {
-        w = parseInt((width || "").trim(), 10) || 0;
-        if (mode === "hex2name") {
-          const hx = padBytes(validateHex(cleanHex(input)), w);
-          setBusy(true); setOut("Looking up...");
-          task = hexToName(hexToDec(hx));
-        } else {
-          const name = (input || "").trim();
-          if (!name) throw new Error("Please enter a PSN name.");
-          setBusy(true); setOut("Looking up...");
-          task = nameToHex(name);
-        }
-      } catch (e) {
-        setBusy(false);
-        fail(e);
-        return;
-      }
-      task.then(function (res) {
-        const hexId = decToHex(res.accountId).padStart((w || 8) * 2, "0");
-        const result = mode === "hex2name" ? res.onlineId : hexId;
-        setLast(result);
-        copy(result);
-        setOut(
-          "Online ID:        " + res.onlineId + "\n" +
-          "Account ID:       " + res.accountId + "\n" +
-          "-----------------------------------\n" +
-          "Hex ID:           " + hexId + "\n" +
-          "Byte count:       " + (hexId.length / 2) + "\n\n" +
-          "(Swapped endian hex: " + swapEndian(hexId) + ")"
-        );
+      const w = parseInt((width || "").trim(), 10) || 0;
+      setBusy(true);
+      setOut("Looking up...");
+      lookup(mode, input, w).then(function (r) {
+        setLast(r.result);
+        copy(r.result);
+        setOut(r.text);
       }).catch(fail).then(function () { setBusy(false); });
     };
 
@@ -263,5 +267,72 @@
     }
   }
 
-  return { default: { onLoad() {}, onUnload() {}, settings: Settings } };
+  // ---------- /psn slash command ----------
+  let unregister = null;
+
+  const argOf = (args, name) => {
+    for (let i = 0; i < (args || []).length; i++) if (args[i] && args[i].name === name) return args[i].value;
+    return undefined;
+  };
+  const reply = (ctx, text) => {
+    try {
+      const m = V.metro.findByProps("sendBotMessage");
+      m.sendBotMessage(ctx.channel.id, "```\n" + text + "\n```");
+    } catch (e) {
+      toast(text.split("\n")[0]);
+    }
+  };
+
+  const command = {
+    name: "psn",
+    displayName: "psn",
+    description: "Convert a PSN hex Account ID to a name, or a name to a hex ID",
+    displayDescription: "Convert a PSN hex Account ID to a name, or a name to a hex ID",
+    applicationId: "-1",
+    type: 1,
+    inputType: 0,
+    options: [
+      {
+        name: "mode", displayName: "mode", type: 3, required: true,
+        description: "Direction of the conversion", displayDescription: "Direction of the conversion",
+        choices: [
+          { name: "Hex ID to PSN name", displayName: "Hex ID \u2192 PSN name", value: "hex2name" },
+          { name: "PSN name to Hex ID", displayName: "PSN name \u2192 Hex ID", value: "name2hex" },
+        ],
+      },
+      {
+        name: "value", displayName: "value", type: 3, required: true,
+        description: "The hex ID or the PSN name", displayDescription: "The hex ID or the PSN name",
+      },
+      {
+        name: "width", displayName: "width", type: 4, required: false,
+        description: "Force byte width (optional)", displayDescription: "Force byte width (optional)",
+      },
+    ],
+    execute: function (args, ctx) {
+      const mode = argOf(args, "mode") || "hex2name";
+      const w = parseInt(argOf(args, "width"), 10) || 0;
+      return lookup(mode, String(argOf(args, "value") || ""), w).then(function (r) {
+        copy(r.result);
+        reply(ctx, r.text);
+      }).catch(function (e) {
+        const msg = String((e && e.message) || e);
+        if (/expired|incorrect/i.test(msg)) session = null;
+        reply(ctx, "Error: " + msg + (/NPSSO/i.test(msg) ? "\n(Set it in the plugin's settings page.)" : ""));
+      });
+    },
+  };
+
+  return {
+    default: {
+      onLoad() {
+        try { unregister = V.commands.registerCommand(command); } catch (e) { toast("PSN: couldn't register /psn"); }
+      },
+      onUnload() {
+        try { if (unregister) unregister(); } catch (e) {}
+        unregister = null;
+      },
+      settings: Settings,
+    },
+  };
 })()
