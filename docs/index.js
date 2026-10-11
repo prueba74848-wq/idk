@@ -65,67 +65,75 @@
   const qs = (o) => Object.keys(o).map((k) => encodeURIComponent(k) + "=" + encodeURIComponent(o[k])).join("&");
   let session = null; // { access, exp }
 
-  async function accessToken() {
-    if (session && session.exp > Date.now() + 60000) return session.access;
+  function accessToken() {
+    if (session && session.exp > Date.now() + 60000) return Promise.resolve(session.access);
     const npsso = (storage.npsso || "").trim();
-    if (!npsso) throw new Error("Enter your NPSSO token first.");
+    if (!npsso) return Promise.reject(new Error("Enter your NPSSO token first."));
     const cid = uuid();
-    const authUrl = "https://ca.account.sony.com/api/authz/v3/oauth/authorize?" + qs({
-      access_type: "offline", cid, client_id: "09515159-7237-4370-9b40-3806e67c0891",
+    const authUrl = "https://ca.account.sony.com/api/authz/v3/oauth/authorize" + "?" + qs({
+      access_type: "offline", cid: cid, client_id: "09515159-7237-4370-9b40-3806e67c0891",
       device_base_font_size: "10", device_profile: "mobile", elements_visibility: "no_aclink",
       enable_scheme_error_code: "true", no_captcha: "true", PlatformPrivacyWs1: "minimal",
       redirect_uri: REDIRECT, response_type: "code", scope: SCOPE,
       service_entity: "urn:service-entity:psn", service_logo: "ps", smcid: "psapp:signin",
       support_scheme: "sneiprls", turnOnTrustedBrowser: "true", ui: "pr",
     });
-    const r1 = await fetch(authUrl, {
+    return fetch(authUrl, {
       method: "GET",
       redirect: "manual",
       headers: { Cookie: "npsso=" + npsso, "X-Requested-With": "com.scee.psxandroid" },
+    }).then(function (r1) {
+      const loc = r1.headers && r1.headers.get && r1.headers.get("location");
+      if (!loc) {
+        throw new Error("PSN did not return a redirect (HTTP " + r1.status + "). This platform may hide or follow the redirect, so the login step can't read the auth code.");
+      }
+      if (/[?&]error=/.test(loc)) {
+        throw new Error(/error_code=4165/.test(loc) ? "NPSSO token is expired or incorrect." : "PSN authentication failed.");
+      }
+      const m = /[?&]code=([^&]+)/.exec(loc);
+      if (!m) throw new Error("No auth code in PSN redirect.");
+      return fetch("https://ca.account.sony.com/api/authz/v3/oauth/token", {
+        method: "POST",
+        headers: {
+          Authorization: CLIENT_AUTH,
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": "com.sony.snei.np.android.sso.share.oauth.versa.USER_AGENT",
+          "X-Psn-Correlation-Id": cid,
+        },
+        body: qs({ cid: cid, code: decodeURIComponent(m[1]), grant_type: "authorization_code", redirect_uri: REDIRECT, scope: SCOPE, token_format: "jwt" }),
+      });
+    }).then(function (r2) {
+      return r2.json();
+    }).then(function (j) {
+      if (!j.access_token) throw new Error("Token request failed: " + JSON.stringify(j).slice(0, 200));
+      session = { access: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
+      return session.access;
     });
-    const loc = r1.headers && r1.headers.get && r1.headers.get("location");
-    if (!loc) {
-      throw new Error("PSN did not return a redirect (HTTP " + r1.status + "). This platform may hide or follow the redirect, so the login step can't read the auth code.");
-    }
-    if (/[?&]error=/.test(loc)) {
-      throw new Error(/error_code=4165/.test(loc) ? "NPSSO token is expired or incorrect." : "PSN authentication failed.");
-    }
-    const m = /[?&]code=([^&]+)/.exec(loc);
-    if (!m) throw new Error("No auth code in PSN redirect.");
-    const r2 = await fetch("https://ca.account.sony.com/api/authz/v3/oauth/token", {
-      method: "POST",
-      headers: {
-        Authorization: CLIENT_AUTH,
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "com.sony.snei.np.android.sso.share.oauth.versa.USER_AGENT",
-        "X-Psn-Correlation-Id": cid,
-      },
-      body: qs({ cid, code: decodeURIComponent(m[1]), grant_type: "authorization_code", redirect_uri: REDIRECT, scope: SCOPE, token_format: "jwt" }),
-    });
-    const j = await r2.json();
-    if (!j.access_token) throw new Error("Token request failed: " + JSON.stringify(j).slice(0, 200));
-    session = { access: j.access_token, exp: Date.now() + (j.expires_in || 3600) * 1000 };
-    return session.access;
   }
 
-  async function psnGet(url) {
-    const token = await accessToken();
-    const r = await fetch(url, { headers: { Authorization: "Bearer " + token } });
-    const j = await r.json();
-    if (!r.ok) throw new Error((j && j.error && j.error.message) || "PSN lookup failed (HTTP " + r.status + ").");
-    return j;
+  function psnGet(url) {
+    return accessToken().then(function (token) {
+      return fetch(url, { headers: { Authorization: "Bearer " + token } });
+    }).then(function (r) {
+      return r.json().then(function (j) {
+        if (!r.ok) throw new Error((j && j.error && j.error.message) || "PSN lookup failed (HTTP " + r.status + ").");
+        return j;
+      });
+    });
   }
 
-  async function hexToName(accountIdDec) {
-    const j = await psnGet(`https://m.np.playstation.com/api/userProfile/v1/internal/users/${accountIdDec}/profiles`);
-    if (!j.onlineId) throw new Error("No online ID in response.");
-    return { onlineId: j.onlineId, accountId: accountIdDec };
+  function hexToName(accountIdDec) {
+    return psnGet("https://m.np.playstation.com/api/userProfile/v1/internal/users/" + accountIdDec + "/profiles").then(function (j) {
+      if (!j.onlineId) throw new Error("No online ID in response.");
+      return { onlineId: j.onlineId, accountId: accountIdDec };
+    });
   }
-  async function nameToHex(name) {
-    const j = await psnGet(`https://us-prof.np.community.playstation.net/userProfile/v1/users/${encodeURIComponent(name)}/profile2?fields=accountId,onlineId,currentOnlineId`);
-    const p = j.profile || j;
-    if (!p.accountId) throw new Error("User not found.");
-    return { onlineId: p.onlineId || name, accountId: String(p.accountId) };
+  function nameToHex(name) {
+    return psnGet("https://us-prof.np.community.playstation.net/userProfile/v1/users/" + encodeURIComponent(name) + "/profile2?fields=accountId,onlineId,currentOnlineId").then(function (j) {
+      const p = j.profile || j;
+      if (!p.accountId) throw new Error("User not found.");
+      return { onlineId: p.onlineId || name, accountId: String(p.accountId) };
+    });
   }
 
   // ---------- clipboard / toast (best effort across Kettu/Bunny builds) ----------
@@ -167,41 +175,48 @@
 
     const switchMode = (m) => { setMode(m); setInput(""); setOut(""); setLast(""); };
 
-    const convert = async () => {
+    const fail = function (e) {
+      const msg = String((e && e.message) || e);
+      if (/expired|incorrect/i.test(msg)) session = null;
+      toast(msg);
+      setOut("Error: " + msg);
+    };
+
+    const convert = function () {
       if (busy) return;
+      let w = 0;
+      let task;
       try {
-        const w = parseInt((width || "").trim(), 10) || 0;
-        let res;
+        w = parseInt((width || "").trim(), 10) || 0;
         if (mode === "hex2name") {
           const hx = padBytes(validateHex(cleanHex(input)), w);
           setBusy(true); setOut("Looking up...");
-          res = await hexToName(hexToDec(hx));
+          task = hexToName(hexToDec(hx));
         } else {
           const name = (input || "").trim();
           if (!name) throw new Error("Please enter a PSN name.");
           setBusy(true); setOut("Looking up...");
-          res = await nameToHex(name);
+          task = nameToHex(name);
         }
+      } catch (e) {
+        setBusy(false);
+        fail(e);
+        return;
+      }
+      task.then(function (res) {
         const hexId = decToHex(res.accountId).padStart((w || 8) * 2, "0");
         const result = mode === "hex2name" ? res.onlineId : hexId;
         setLast(result);
         copy(result);
         setOut(
-          `Online ID:        ${res.onlineId}\n` +
-          `Account ID:       ${res.accountId}\n` +
-          `${"-".repeat(35)}\n` +
-          `Hex ID:           ${hexId}\n` +
-          `Byte count:       ${hexId.length / 2}\n\n` +
-          `(Swapped endian hex: ${swapEndian(hexId)})`
+          "Online ID:        " + res.onlineId + "\n" +
+          "Account ID:       " + res.accountId + "\n" +
+          "-----------------------------------\n" +
+          "Hex ID:           " + hexId + "\n" +
+          "Byte count:       " + (hexId.length / 2) + "\n\n" +
+          "(Swapped endian hex: " + swapEndian(hexId) + ")"
         );
-      } catch (e) {
-        setOut("");
-        if (/expired|incorrect/i.test(String(e && e.message))) session = null;
-        toast(String((e && e.message) || e));
-        setOut("Error: " + String((e && e.message) || e));
-      } finally {
-        setBusy(false);
-      }
+      }).catch(fail).then(function () { setBusy(false); });
     };
 
     const radio = (label, value) =>
