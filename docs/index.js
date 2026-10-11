@@ -92,11 +92,13 @@
     return fetch(authUrl, {
       method: "GET",
       redirect: "manual",
+      credentials: "omit",
       headers: { Cookie: "npsso=" + npsso, "X-Requested-With": "com.scee.psxandroid" },
     }).then(function (r1) {
       const loc = r1.headers && r1.headers.get && r1.headers.get("location");
       if (!loc) {
-        throw new Error("PSN did not accept the NPSSO token (HTTP " + r1.status + ", no redirect). It is most likely expired or invalid: sign in at playstation.com, open ca.account.sony.com/api/v1/ssocookie, and paste the fresh 64-character token in settings.");
+        const where = String(r1.url || "").split("?")[0].replace(/^https?:\/\//, "");
+        throw new Error("PSN did not accept the NPSSO token (HTTP " + r1.status + ", no redirect" + (where ? ", landed on " + where : "") + "). It is most likely expired or invalid: sign in at playstation.com, open ca.account.sony.com/api/v1/ssocookie, and paste the fresh 64-character token in settings.");
       }
       if (/[?&]error=/.test(loc)) {
         throw new Error(/error_code=4165/.test(loc) ? "NPSSO token is expired or incorrect." : "PSN authentication failed.");
@@ -105,6 +107,7 @@
       if (!m) throw new Error("No auth code in PSN redirect.");
       return fetch("https://ca.account.sony.com/api/authz/v3/oauth/token", {
         method: "POST",
+        credentials: "omit",
         headers: {
           Authorization: CLIENT_AUTH,
           "Content-Type": "application/x-www-form-urlencoded",
@@ -124,7 +127,7 @@
 
   function psnGet(url) {
     return accessToken().then(function (token) {
-      return fetch(url, { headers: { Authorization: "Bearer " + token } });
+      return fetch(url, { credentials: "omit", headers: { Authorization: "Bearer " + token } });
     }).then(function (r) {
       return r.json().then(function (j) {
         if (!r.ok) throw new Error((j && j.error && j.error.message) || "PSN lookup failed (HTTP " + r.status + ").");
