@@ -3,7 +3,17 @@
   const safe = (f) => { try { return f(); } catch (e) { return undefined; } };
   const getReact = () => safe(() => V.metro.common.React) || safe(() => V.metro.findByProps("createElement", "useState"));
   const getRN = () => safe(() => V.metro.common.ReactNative) || safe(() => V.metro.findByProps("View", "Text", "TextInput", "ScrollView"));
-  const storage = safe(() => V.plugin.storage) || {};
+  const localStore = {};
+  const store = () => safe(() => V.plugin.storage) || localStore;
+  let memToken = "";
+  // Accepts a bare token, a quoted one, or the whole {"npsso":"..."} JSON that Sony's page shows.
+  const normToken = (raw) => {
+    const t = String(raw || "");
+    const m = t.match(/[A-Za-z0-9]{64}/);
+    return m ? m[0] : t.replace(/["'\s{}]/g, "").replace(/^npsso:?/i, "");
+  };
+  const getToken = () => normToken(safe(() => store().npsso) || memToken);
+  const setToken = (t) => { memToken = t; try { store().npsso = t; } catch (e) {} };
 
   // ---------- hex helpers (no BigInt: 64-bit IDs exceed Number precision) ----------
   const cleanHex = (v) => {
@@ -67,8 +77,9 @@
 
   function accessToken() {
     if (session && session.exp > Date.now() + 60000) return Promise.resolve(session.access);
-    const npsso = (storage.npsso || "").trim();
+    const npsso = getToken();
     if (!npsso) return Promise.reject(new Error("Enter your NPSSO token first."));
+    if (npsso.length < 32) return Promise.reject(new Error("The NPSSO token looks wrong (" + npsso.length + " characters, expected 64)."));
     const cid = uuid();
     const authUrl = "https://ca.account.sony.com/api/authz/v3/oauth/authorize" + "?" + qs({
       access_type: "offline", cid: cid, client_id: "09515159-7237-4370-9b40-3806e67c0891",
@@ -85,7 +96,7 @@
     }).then(function (r1) {
       const loc = r1.headers && r1.headers.get && r1.headers.get("location");
       if (!loc) {
-        throw new Error("PSN did not return a redirect (HTTP " + r1.status + "). This platform may hide or follow the redirect, so the login step can't read the auth code.");
+        throw new Error("PSN did not accept the NPSSO token (HTTP " + r1.status + ", no redirect). It is most likely expired or invalid: sign in at playstation.com, open ca.account.sony.com/api/v1/ssocookie, and paste the fresh 64-character token in settings.");
       }
       if (/[?&]error=/.test(loc)) {
         throw new Error(/error_code=4165/.test(loc) ? "NPSSO token is expired or incorrect." : "PSN authentication failed.");
@@ -197,7 +208,7 @@
     const [mode, setMode] = React.useState("hex2name");
     const [input, setInput] = React.useState("");
     const [width, setWidth] = React.useState("");
-    const [npsso, setNpsso] = React.useState(storage.npsso || "");
+    const [npsso, setNpsso] = React.useState(safe(() => store().npsso) || memToken || "");
     const [out, setOut] = React.useState("");
     const [last, setLast] = React.useState("");
     const [busy, setBusy] = React.useState(false);
@@ -231,7 +242,12 @@
     return h(RN.ScrollView, { style: { flex: 1, backgroundColor: C.bg }, contentContainerStyle: st.page, keyboardShouldPersistTaps: "handled" },
       h(RN.Text, { style: st.label }, "NPSSO token (stored only on this device):"),
       h(RN.TextInput, { style: st.input, value: npsso, secureTextEntry: true, autoCapitalize: "none", autoCorrect: false,
-        onChangeText: (t) => { setNpsso(t); storage.npsso = t; session = null; } }),
+        onChangeText: (t) => { setNpsso(t); setToken(t); session = null; } }),
+      h(RN.Text, { style: { color: C.dim, fontSize: 12, marginTop: 4 } },
+        (function () {
+          const n = normToken(npsso).length;
+          return n === 0 ? "Token: not set" : n === 64 ? "Token: saved (64 characters)" : "Token: " + n + " characters (expected 64)";
+        })()),
       h(RN.View, { style: { flexDirection: "row", marginTop: 16 } },
         radio("Hex ID → PSN name", "hex2name"), radio("PSN name → Hex ID", "name2hex")),
       h(RN.Text, { style: st.label }, mode === "hex2name" ? "Hex value:" : "PSN name:"),
