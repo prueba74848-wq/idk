@@ -1,7 +1,14 @@
 {
   "name": "PSN ID Lookup",
   "description": "Convert between a PSN hex Account ID and an Online ID (name), both ways.",
-  "authors": [{ "name": "you" }],
+  "authors": [
+    {
+      "name": "you"
+    }
+  ],
   "main": "index.js",
-  "vendetta": { "icon": "ic_link" }
+  "vendetta": {
+    "icon": "ic_link"
+  },
+  "hash": "581808b3f826ee37c272300eaf71bf292a1242379f6cbb11c2dd07f64618cdcf"
 }
