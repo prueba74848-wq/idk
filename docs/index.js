@@ -1,7 +1,9 @@
 (function () {
-  // NOTE: no comments or statements may come before this function (the loader does `return <this file>`).
-  const { React, ReactNative: RN } = vendetta.metro.common;
-  const { storage } = vendetta.plugin;
+  const V = (typeof vendetta !== "undefined" && vendetta) || {};
+  const safe = (f) => { try { return f(); } catch (e) { return undefined; } };
+  const getReact = () => safe(() => V.metro.common.React) || safe(() => V.metro.findByProps("createElement", "useState"));
+  const getRN = () => safe(() => V.metro.common.ReactNative) || safe(() => V.metro.findByProps("View", "Text", "TextInput", "ScrollView"));
+  const storage = safe(() => V.plugin.storage) || {};
 
   // ---------- hex helpers (no BigInt: 64-bit IDs exceed Number precision) ----------
   const cleanHex = (v) => {
@@ -129,13 +131,16 @@
   // ---------- clipboard / toast (best effort across Kettu/Bunny builds) ----------
   const copy = (text) => {
     try {
-      const c = vendetta.metro.common.clipboard || vendetta.metro.findByProps("setString", "getString");
+      const c = safe(() => V.metro.common.clipboard) || V.metro.findByProps("setString", "getString");
       c.setString(text);
       return true;
     } catch (e) { return false; }
   };
-  const toast = (msg) => { try { vendetta.ui.toasts.showToast(msg); } catch (e) {} };
+  const toast = (msg) => { try { V.ui.toasts.showToast(msg); } catch (e) {} };
 
+  function buildPanel() {
+    const React = getReact();
+    const RN = getRN();
   // ---------- UI: same layout as the desktop tool ----------
   const h = React.createElement;
   const C = { bg: "#1e1f22", box: "#2b2d31", text: "#f2f3f5", dim: "#b5bac1", accent: "#5865f2", border: "#4e5058" };
@@ -151,7 +156,7 @@
   const Btn = (label, onPress, extra, disabled) =>
     h(RN.TouchableOpacity, { onPress, disabled, style: [st.btn, extra, disabled && { opacity: 0.5 }] }, h(RN.Text, { style: st.btnText }, label));
 
-  function Settings() {
+  function Panel() {
     const [mode, setMode] = React.useState("hex2name");
     const [input, setInput] = React.useState("");
     const [width, setWidth] = React.useState("");
@@ -222,6 +227,25 @@
         toast(copy(last) ? "Copied" : "Couldn't access clipboard");
       })
     );
+  }
+
+    return Panel;
+  }
+
+  let PanelComp = null;
+  function Settings() {
+    const React = getReact();
+    const RN = getRN();
+    try {
+      if (!PanelComp) PanelComp = buildPanel();
+      return React.createElement(PanelComp);
+    } catch (e) {
+      const msg = "PSN ID Lookup failed to render: " + String((e && e.message) || e);
+      try {
+        return React.createElement(RN.View, { style: { padding: 16 } },
+          React.createElement(RN.Text, { style: { color: "#f2f3f5" }, selectable: true }, msg));
+      } catch (e2) { return null; }
+    }
   }
 
   return { default: { onLoad() {}, onUnload() {}, settings: Settings } };
